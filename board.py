@@ -5,29 +5,35 @@ class MinesweeperBoard:
         self.width = width
         self.height = height
         self.total_mines = total_mines
-        
+
         # 1. Matriks Rahasia (True Board): Tempat bom berada (1 = Bom, 0 = Aman)
         self.true_board = [[0 for _ in range(width)] for _ in range(height)]
-        
+
         # 2. Matriks Publik (Visible Board): State yang dilihat oleh Z3 dan Claude
         # 'U' = Unexplored (Belum dibuka)
         # 'F' = Flagged (Ditandai bom)
         # 0-8 = Angka jumlah bom di sekitar kotak yang sudah dibuka
         self.visible_board = [['U' for _ in range(width)] for _ in range(height)]
-        
+
         self.game_over = False
         self.won = False
-        self._generate_mines()
+        self.first_click = True
+        # In Windows klik pertama pemain
+        # dijamin 100% aman dan biasanya membuka area kosong yang luas.
+        # Caranya: papan baru dipasangi bom setelah pemain menentukan klik pertamanya.
+        # self._generate_mines()
 
-    def _generate_mines(self):
-        """Menyebarkan ranjau secara acak di papan"""
+    def _generate_mines(self, start_r, start_c):
+        """Menyebarkan ranjau secara acak, KECUALI di lokasi start_r, start_c"""
         mines_placed = 0
         while mines_placed < self.total_mines:
             r = random.randint(0, self.height - 1)
             c = random.randint(0, self.width - 1)
-            if self.true_board[r][c] == 0:
+            # Pastikan bukan di tempat klik pertama dan belum ada bom
+            if (r != start_r or c != start_c) and self.true_board[r][c] == 0:
                 self.true_board[r][c] = 1
                 mines_placed += 1
+
 
     def get_neighbors(self, r, c):
         """Mengembalikan list koordinat tetangga (maksimal 8 kotak sekitar)"""
@@ -46,25 +52,25 @@ class MinesweeperBoard:
         return sum(self.true_board[nr][nc] for nr, nc in self.get_neighbors(r, c))
 
     def reveal_cell(self, r, c):
-        """Aksi klik kiri: Membuka kotak"""
         if self.visible_board[r][c] != 'U':
-            return True # Kotak sudah dibuka atau di-flag
-        
-        # ZONK! Kena ranjau
+          return True
+
+        if self.first_click:
+          self._generate_mines(r, c)
+          self.first_click = False
+
         if self.true_board[r][c] == 1:
-            self.game_over = True
-            return False
-            
-        # Hitung angka tetangga
+          self.game_over = True
+          return False
+
         mine_count = self._count_adjacent_mines(r, c)
         self.visible_board[r][c] = mine_count
-        
-        # Flood fill otomatis jika angkanya 0 (tidak ada bom di sekitar)
+
         if mine_count == 0:
             for nr, nc in self.get_neighbors(r, c):
                 if self.visible_board[nr][nc] == 'U':
                     self.reveal_cell(nr, nc)
-                    
+
         self._check_win_condition()
         return True
 
