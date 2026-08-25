@@ -1,8 +1,19 @@
 import csv
-import os
 from simulate import simulate_game
 
-csv_file = "experiment_results.csv"
+RESULTS_CSV = "experiment_results.csv"
+DECISIONS_CSV = "llm_decisions.csv"
+
+RESULTS_HEADER = [
+    "board_name", "mode", "iteration", "game_id", "result", "failure_reason",
+    "duration", "z3_calls", "llm_calls", "frontier_calls", "avg_frontier_size"
+]
+
+DECISIONS_HEADER = [
+    "game_id", "board_name", "mode", "step", "frontier_size",
+    "llm_choice", "safe", "deadlock_type", "reasoning",
+    "top1_hit", "top3_hit", "top5_hit"
+]
 
 def main():
     boards = {
@@ -12,11 +23,16 @@ def main():
     }
 
     modes = ["OLLAMA_ONLY", "Z3_ONLY", "NEURO_SYMBOLIC", "RANDOM_FRONTIER", "Z3_FRONTIER_RANDOM"]
-    iterations = 100 # Set ke 50 atau 100 saat pengumpulan data final paper lo
+    iterations = 100 # Set ke 1000 atau 5000 saat pengumpulan data final paper lo
 
     print("==========================================================")
     print("      NEURO-SYMBOLIC MINESWEEPER BATCH SIMULATOR          ")
     print("==========================================================\n")
+
+    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(RESULTS_HEADER)
+    with open(DECISIONS_CSV, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(DECISIONS_HEADER)
 
     for board_name, spec in boards.items():
         print(f"--- MENGUJI UKURAN PAPAN: {board_name} ({spec['w']}x{spec['h']} | {spec['m']} Mines) ---")
@@ -27,7 +43,7 @@ def main():
             total_llm_calls = 0
             total_z3_calls = 0
             fail_reasons = {
-                "Z3_Macet": 0,
+                "Z3_Stuck": 0,
                 "Z3_Frontier_Random": 0,
                 "Random_Frontier": 0,
                 "LLM_Hallucination": 0,
@@ -36,44 +52,61 @@ def main():
                 "None": 0
             }
 
-            for _ in range(iterations):
-                res = simulate_game(mode, spec['w'], spec['h'], spec['m'])
-                if res["result"] == "WIN": wins += 1
+            results_rows = []
+            decision_rows = []
+            decision_dicts = []
+
+            for i in range(iterations):
+                # game_id sama antar mode pada board yang sama => papan identik,
+                # perbandingan antar mode jadi paired (bukan sampel acak independen).
+                game_id = i
+                res = simulate_game(mode, spec['w'], spec['h'], spec['m'], game_id=game_id, board_name=board_name)
+
+                if res["result"] == "WIN":
+                    wins += 1
                 total_time += res["duration"]
                 total_llm_calls += res["llm_calls"]
                 total_z3_calls += res["z3_calls"]
                 fail_reasons[res["failure_reason"]] += 1
+
+                results_rows.append([
+                    board_name, mode, i + 1, game_id, res["result"], res["failure_reason"],
+                    res["duration"], res["z3_calls"], res["llm_calls"],
+                    res["frontier_calls"], res["avg_frontier_size"]
+                ])
+
+                for d in res.get("llm_decisions", []):
+                    decision_dicts.append(d)
+                    decision_rows.append([
+                        d["game_id"], d["board_name"], d["mode"], d["step"], d["frontier_size"],
+                        d["llm_choice"], d["safe"], d["deadlock_type"], d["reasoning"],
+                        d["top1_hit"], d["top3_hit"], d["top5_hit"]
+                    ])
 
             win_rate = (wins / iterations) * 100
             avg_time = total_time / iterations
             avg_llm = total_llm_calls / iterations
 
             print(f"[{mode}] Win Rate: {win_rate:.1f}% | Avg Time: {avg_time:.2f}s | Avg LLM Calls: {avg_llm:.1f}")
-            if mode == "NEURO_SYMBOLIC" or mode == "OLLAMA_ONLY":
+            if mode in ("NEURO_SYMBOLIC", "OLLAMA_ONLY"):
                 print(f"   -> [Failure Distribution] Hallucinations: {fail_reasons['LLM_Hallucination']} | Wrong Guess: {fail_reasons['LLM_Wrong_Probability']}")
+
+                # Top-K accuracy: dari semua keputusan LLM yang punya ranking valid
+                # (bukan fallback/hallucination), berapa persen yang top-k nya
+                # mengandung minimal satu sel aman.
+                scored = [d for d in decision_dicts if d["top1_hit"] is not None]
+                if scored:
+                    top1 = sum(d["top1_hit"] for d in scored) / len(scored) * 100
+                    top3 = sum(d["top3_hit"] for d in scored) / len(scored) * 100
+                    top5 = sum(d["top5_hit"] for d in scored) / len(scored) * 100
+                    print(f"   -> [Top-K Accuracy] Top-1: {top1:.1f}% | Top-3: {top3:.1f}% | Top-5: {top5:.1f}% (n={len(scored)})")
+
+            with open(RESULTS_CSV, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(results_rows)
+            with open(DECISIONS_CSV, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(decision_rows)
+
         print("-" * 60)
-
-
-        with open(csv_file, "a", newline="", encoding="utf-8") as f:
-          writer = csv.writer(f)
-
-          for i in range(iterations):
-
-              res = simulate_game(...)
-
-              writer.writerow([
-                  board_name,
-                  mode,
-                  i + 1,
-                  res["result"],
-                  res["failure_reason"],
-                  res["duration"],
-                  res["z3_calls"],
-                  res["llm_calls"],
-                  res["frontier_calls"],
-                  res["avg_frontier_size"]
-              ])
-
 
 if __name__ == "__main__":
     main()

@@ -25,7 +25,19 @@ def get_frontier_cells(game):
 
     return frontier
 
-def simulate_game(mode, width, height, total_mines):
+def topk_hit(game, ranking, k):
+    """
+    True jika ada minimal satu sel AMAN (bukan ranjau) di antara
+    k koordinat teratas ranking LLM (diurutkan risk terendah -> tertinggi).
+    """
+    for item in ranking[:k]:
+        r, c = item["coord"]
+        if game.true_board[r][c] == 0:
+            return True
+    return False
+
+def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
+    random.seed(game_id)
     game = MinesweeperBoard(width, height, total_mines)
     game.reveal_cell(0, 0) # Pembukaan aman awal
 
@@ -35,19 +47,20 @@ def simulate_game(mode, width, height, total_mines):
         "llm_calls": 0,
         "failure_reason": "None",
         "result": "LOSS",
-
         "frontier_calls": 0,
-        "frontier_size_sum": 0
+        "frontier_size_sum": 0,
+        "llm_decisions": []
     }
 
+    step = 0
     start_time = time.time()
 
     while not game.game_over and not game.won:
+        step += 1
         # --- MODE A: OLLAMA MURNI ---
         if mode == "OLLAMA_ONLY":
             flat = [c for r in game.visible_board for c in r]
             mines_left = game.total_mines - flat.count('F')
-            stats["llm_calls"] += 1
             analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left)
             stats["llm_calls"] += 1
             stats["frontier_calls"] += 1
@@ -55,14 +68,40 @@ def simulate_game(mode, width, height, total_mines):
 
             if analysis in ["HALLUCINATION", "ERROR"] or not analysis or not isinstance(analysis, dict):
                 stats["failure_reason"] = "LLM_Hallucination"
+                stats["llm_decisions"].append({
+                    "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
+                    "frontier_size": num_options, "llm_choice": None, "safe": False,
+                    "deadlock_type": "N/A", "reasoning": f"invalid_response:{analysis}",
+                    "top1_hit": None, "top3_hit": None, "top5_hit": None
+                })
+
                 break
 
             coord = analysis["coordinate"]
             if not (0 <= coord[0] < height and 0 <= coord[1] < width):
                 stats["failure_reason"] = "LLM_Hallucination"
+                stats["llm_decisions"].append({
+                    "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
+                    "frontier_size": num_options, "llm_choice": coord, "safe": False,
+                    "deadlock_type": "Out_of_Bounds", "reasoning": analysis.get("reasoning", ""),
+                    "top1_hit": None, "top3_hit": None, "top5_hit": None
+                })
+
                 break
 
-            if not game.reveal_cell(coord[0], coord[1]):
+            ranking = analysis.get("ranking", [])
+            success = game.reveal_cell(coord[0], coord[1])
+            stats["llm_decisions"].append({
+                "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
+                "frontier_size": num_options, "llm_choice": coord, "safe": success,
+                "deadlock_type": "Pure_50_50" if num_options <= 2 else "Complex_Guess",
+                "reasoning": analysis.get("reasoning", ""),
+                "top1_hit": topk_hit(game, ranking, 1),
+                "top3_hit": topk_hit(game, ranking, 3),
+                "top5_hit": topk_hit(game, ranking, 5)
+            })
+
+            if not success:
                 stats["failure_reason"] = "LLM_Wrong_Probability"
                 break
 
@@ -100,20 +139,22 @@ def simulate_game(mode, width, height, total_mines):
                 for r, c in flags: game.flag_cell(r, c)
             else:
                 # Z3 Mentok -> Tebak Acak Instan (Baseline)
-                frontier = [
+                unexplored = [
                     (r, c)
-                    for r, c in unexplored
-                    if any(
-                        isinstance(game.visible_board[nr][nc], int)
-                        for nr, nc in game.get_neighbors(r, c)
-                    )
+                    for r in range(height)
+                    for c in range(width)
+                    if game.visible_board[r][c] == 'U'
                 ]
 
+                if not unexplored:
+                    break
+
+                frontier = get_frontier_cells(game)
+
                 coord = random.choice(frontier if frontier else unexplored)
-                if not unexplored: break
                 r, c = coord
                 if not game.reveal_cell(r, c):
-                    stats["failure_reason"] = "Z3_Macet"
+                    stats["failure_reason"] = "Z3_Stuck"
                     break
 
         elif mode == "Z3_FRONTIER_RANDOM":
@@ -166,37 +207,63 @@ def simulate_game(mode, width, height, total_mines):
             else:
                 flat = [cell for row in game.visible_board for cell in row]
                 mines_left = game.total_mines - flat.count('F')
-
-                stats["llm_calls"] += 1
                 analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left)
 
                 stats["llm_calls"] += 1
                 stats["frontier_calls"] += 1
                 stats["frontier_size_sum"] += num_options
 
+                reasoning = ""
+                used_fallback = False
+
                 # Tangkap pertahanan Gatekeeper dari ai.py
-                if analysis == "HALLUCINATION" or analysis == "ERROR":
-                    stats["failure_reason"] = "LLM_Hallucination" if analysis == "HALLUCINATION" else "LLM_Wrong_Probability"
+                if analysis in ("HALLUCINATION", "ERROR") or not analysis or not isinstance(analysis, dict):
+                    used_fallback = True
+                    reasoning = f"invalid_response:{analysis}"
 
                     # Picu Stochastic Fallback Defense langsung di sini
                     unexplored = [(r, c) for r in range(height) for c in range(width) if game.visible_board[r][c] == 'U']
                     if not unexplored: break
+
                     # Utamakan frontier dulu jika ada kotak U yang menempel angka
-                    frontier = [(r, c) for r, c in unexplored if any(isinstance(game.visible_board[nr][nc], int) for nr, nc in game.get_neighbors(r, c))]
-                    coord = random.choice(frontier) if frontier else random.choice(unexplored)
+                    frontier = get_frontier_cells(game)
+                    target_r, target_c = random.choice(frontier) if frontier else random.choice(unexplored)
+
+                else:
+                    target_r, target_c = analysis["coordinate"][0], analysis["coordinate"][1]
+                    reasoning = analysis.get("reasoning", "")
+
+                    if not (0 <= target_r < height and 0 <= target_c < width) or game.visible_board[target_r][target_c] != 'U':
+                        used_fallback = True
+                        reasoning = f"out_of_bounds_or_already_open:{[target_r, target_c]}"
+                        unexplored = [(r, c) for r in range(height) for c in range(width) if game.visible_board[r][c] == 'U']
+                        if not unexplored: break
+                        frontier = get_frontier_cells(game)
+                        target_r, target_c = random.choice(frontier) if frontier else random.choice(unexplored)
+
+                ranking = [] if used_fallback else analysis.get("ranking", [])
 
                 # Jalankan tindakan eksekusi
-                target_r, target_c = analysis["coordinate"][0], analysis["coordinate"][1]
                 success = game.reveal_cell(target_r, target_c)
 
+                stats["llm_decisions"].append({
+                    "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
+                    "frontier_size": num_options, "llm_choice": [target_r, target_c], "safe": success,
+                    "deadlock_type": "Fallback" if used_fallback else ("Pure_50_50" if num_options <= 2 else "Complex_Guess"),
+                    "reasoning": reasoning,
+                    "top1_hit": None if used_fallback else topk_hit(game, ranking, 1),
+                    "top3_hit": None if used_fallback else topk_hit(game, ranking, 3),
+                    "top5_hit": None if used_fallback else topk_hit(game, ranking, 5)
+                })
+
                 if not success:
-                    # Di sini kita bisa langsung pakai nilai num_options dari ai.py secara presisi!
-                    if num_options <= 2:
+                    if used_fallback:
+                        stats["failure_reason"] = "LLM_Hallucination" if analysis in ("HALLUCINATION", "ERROR") else "LLM_Wrong_Probability"
+                    elif num_options <= 2:
                         stats["failure_reason"] = "Pure_50_50"
                     else:
                         stats["failure_reason"] = "LLM_Wrong_Probability"
-
-                    break
+                    
 
     if game.won:
         stats["result"] = "WIN"
