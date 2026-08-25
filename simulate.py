@@ -4,6 +4,12 @@ from board import MinesweeperBoard
 from local_ai import call_local_ai
 from verifier import execute_z3_inference
 
+LLM_RESPONSE_FAILURE = {
+    "INVALID_JSON": "Invalid_JSON",
+    "API_ERROR": "API_Error",
+    "NO_VALID_PREDICTION": "Hallucination_Coord",
+}
+
 
 def get_frontier_cells(game):
     """
@@ -66,8 +72,8 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
             stats["frontier_calls"] += 1
             stats["frontier_size_sum"] += num_options
 
-            if analysis in ["HALLUCINATION", "ERROR"] or not analysis or not isinstance(analysis, dict):
-                stats["failure_reason"] = "LLM_Hallucination"
+            if not isinstance(analysis, dict) or not analysis:
+                stats["failure_reason"] = LLM_RESPONSE_FAILURE.get(analysis, "Invalid_JSON")
                 stats["llm_decisions"].append({
                     "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
                     "frontier_size": num_options, "llm_choice": None, "safe": False,
@@ -79,11 +85,22 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
 
             coord = analysis["coordinate"]
             if not (0 <= coord[0] < height and 0 <= coord[1] < width):
-                stats["failure_reason"] = "LLM_Hallucination"
+                stats["failure_reason"] = "Out_of_Bounds"
                 stats["llm_decisions"].append({
                     "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
                     "frontier_size": num_options, "llm_choice": coord, "safe": False,
                     "deadlock_type": "Out_of_Bounds", "reasoning": analysis.get("reasoning", ""),
+                    "top1_hit": None, "top3_hit": None, "top5_hit": None
+                })
+
+                break
+
+            if game.visible_board[coord[0]][coord[1]] != 'U':
+                stats["failure_reason"] = "Already_Open"
+                stats["llm_decisions"].append({
+                    "game_id": game_id, "board_name": board_name, "mode": mode, "step": step,
+                    "frontier_size": num_options, "llm_choice": coord, "safe": False,
+                    "deadlock_type": "Already_Open", "reasoning": analysis.get("reasoning", ""),
                     "top1_hit": None, "top3_hit": None, "top5_hit": None
                 })
 
@@ -102,7 +119,7 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
             })
 
             if not success:
-                stats["failure_reason"] = "LLM_Wrong_Probability"
+                stats["failure_reason"] = "Wrong_Guess"
                 break
 
         # Kalau cuma memilih acak dari frontier, performanya berapa?
@@ -215,10 +232,12 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
 
                 reasoning = ""
                 used_fallback = False
+                fallback_cause = None
 
                 # Tangkap pertahanan Gatekeeper dari ai.py
-                if analysis in ("HALLUCINATION", "ERROR") or not analysis or not isinstance(analysis, dict):
+                if not isinstance(analysis, dict) or not analysis:
                     used_fallback = True
+                    fallback_cause = LLM_RESPONSE_FAILURE.get(analysis, "Invalid_JSON")
                     reasoning = f"invalid_response:{analysis}"
 
                     # Picu Stochastic Fallback Defense langsung di sini
@@ -233,9 +252,13 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
                     target_r, target_c = analysis["coordinate"][0], analysis["coordinate"][1]
                     reasoning = analysis.get("reasoning", "")
 
-                    if not (0 <= target_r < height and 0 <= target_c < width) or game.visible_board[target_r][target_c] != 'U':
+                    out_of_bounds = not (0 <= target_r < height and 0 <= target_c < width)
+                    already_open = not out_of_bounds and game.visible_board[target_r][target_c] != 'U'
+
+                    if out_of_bounds or already_open:
                         used_fallback = True
-                        reasoning = f"out_of_bounds_or_already_open:{[target_r, target_c]}"
+                        fallback_cause = "Out_of_Bounds" if out_of_bounds else "Already_Open"
+                        reasoning = f"{fallback_cause.lower()}:{[target_r, target_c]}"
                         unexplored = [(r, c) for r in range(height) for c in range(width) if game.visible_board[r][c] == 'U']
                         if not unexplored: break
                         frontier = get_frontier_cells(game)
@@ -258,11 +281,11 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
 
                 if not success:
                     if used_fallback:
-                        stats["failure_reason"] = "LLM_Hallucination" if analysis in ("HALLUCINATION", "ERROR") else "LLM_Wrong_Probability"
+                        stats["failure_reason"] = fallback_cause
                     elif num_options <= 2:
                         stats["failure_reason"] = "Pure_50_50"
                     else:
-                        stats["failure_reason"] = "LLM_Wrong_Probability"
+                        stats["failure_reason"] = "Wrong_Guess"
                     
 
     if game.won:

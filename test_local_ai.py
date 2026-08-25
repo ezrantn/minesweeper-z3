@@ -120,7 +120,7 @@ def test_lowest_risk_selected():
 
     assert result["ranking"][2]["risk"] == 0.70
 
-def test_invalid_coordinate_returns_hallucination():
+def test_invalid_coordinate_returns_no_valid_prediction():
 
     board = [
         [1, "U"],
@@ -135,4 +135,4 @@ def test_invalid_coordinate_returns_hallucination():
         client=InvalidClient()
     )
 
-    assert result == "HALLUCINATION"
+    assert result == "NO_VALID_PREDICTION"

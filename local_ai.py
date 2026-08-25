@@ -111,10 +111,17 @@ Example:
             }
         )
 
+    except Exception as e:
+        print(f"[LOCAL AI ERROR] API call failed: {e}")
+        return "API_ERROR", len(choices_to_send)
+    try:
         data = json.loads(
             response.choices[0].message.content.strip()
         )
-
+    except (json.JSONDecodeError, AttributeError, TypeError) as e:
+        print(f"[LOCAL AI ERROR] Invalid JSON: {e}")
+        return "INVALID_JSON", len(choices_to_send)
+    try:
         reasoning = data.get("reasoning", "")
 
         raw_predictions = data.get(
@@ -157,7 +164,7 @@ Example:
 
             print("[LOCAL AI WARNING] No valid prediction.")
 
-            return "HALLUCINATION", len(choices_to_send)
+            return "NO_VALID_PREDICTION", len(choices_to_send)
 
         valid_predictions.sort(
             key=lambda x: x["risk"]
@@ -181,7 +188,5 @@ Example:
         }, len(choices_to_send)
 
     except Exception as e:
-
-        print(f"[LOCAL AI ERROR] {e}")
-
-        return "ERROR", len(choices_to_send)
+        print(f"[LOCAL AI ERROR] Unexpected error while processing response: {e}")
+        return "INVALID_JSON", len(choices_to_send)

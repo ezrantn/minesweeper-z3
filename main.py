@@ -46,8 +46,12 @@ def main():
                 "Z3_Stuck": 0,
                 "Z3_Frontier_Random": 0,
                 "Random_Frontier": 0,
-                "LLM_Hallucination": 0,
-                "LLM_Wrong_Probability": 0,
+                "Invalid_JSON": 0,
+                "API_Error": 0,
+                "Hallucination_Coord": 0,
+                "Out_of_Bounds": 0,
+                "Already_Open": 0,
+                "Wrong_Guess": 0,
                 "Pure_50_50": 0,
                 "None": 0
             }
@@ -89,8 +93,17 @@ def main():
 
             print(f"[{mode}] Win Rate: {win_rate:.1f}% | Avg Time: {avg_time:.2f}s | Avg LLM Calls: {avg_llm:.1f}")
             if mode in ("NEURO_SYMBOLIC", "OLLAMA_ONLY"):
-                print(f"   -> [Failure Distribution] Hallucinations: {fail_reasons['LLM_Hallucination']} | Wrong Guess: {fail_reasons['LLM_Wrong_Probability']}")
-
+                print(
+                    "   -> [Failure Distribution] "
+                    f"Invalid_JSON: {fail_reasons['Invalid_JSON']} | "
+                    f"API_Error: {fail_reasons['API_Error']} | "
+                    f"Hallucination_Coord: {fail_reasons['Hallucination_Coord']} | "
+                    f"Out_of_Bounds: {fail_reasons['Out_of_Bounds']} | "
+                    f"Already_Open: {fail_reasons['Already_Open']} | "
+                    f"Pure_50_50: {fail_reasons['Pure_50_50']} | "
+                    f"Wrong_Guess: {fail_reasons['Wrong_Guess']}"
+                )
+                
                 # Top-K accuracy: dari semua keputusan LLM yang punya ranking valid
                 # (bukan fallback/hallucination), berapa persen yang top-k nya
                 # mengandung minimal satu sel aman.
