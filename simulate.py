@@ -42,7 +42,7 @@ def topk_hit(game, ranking, k):
             return True
     return False
 
-def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
+def simulate_game(mode, width, height, total_mines, game_id=0, board_name="", model="llama3", full_board=False):
     random.seed(game_id)
     game = MinesweeperBoard(width, height, total_mines)
     game.reveal_cell(0, 0) # Pembukaan aman awal
@@ -67,7 +67,7 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
         if mode == "OLLAMA_ONLY":
             flat = [c for r in game.visible_board for c in r]
             mines_left = game.total_mines - flat.count('F')
-            analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left)
+            analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left, model=model, use_full_board=full_board)
             stats["llm_calls"] += 1
             stats["frontier_calls"] += 1
             stats["frontier_size_sum"] += num_options
@@ -224,7 +224,7 @@ def simulate_game(mode, width, height, total_mines, game_id=0, board_name=""):
             else:
                 flat = [cell for row in game.visible_board for cell in row]
                 mines_left = game.total_mines - flat.count('F')
-                analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left)
+                analysis, num_options = call_local_ai(game.visible_board, width, height, mines_left, model=model, use_full_board=full_board)
 
                 stats["llm_calls"] += 1
                 stats["frontier_calls"] += 1

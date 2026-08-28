@@ -1,7 +1,7 @@
 import json
 from openai import OpenAI
 
-def call_local_ai(visible_board, width, height, mines_left, client=None):
+def call_local_ai(visible_board, width, height, mines_left, client=None, model="llama3", use_full_board=False):
     if client is None:  
         client = OpenAI(
             base_url="http://localhost:11434/v1",
@@ -46,15 +46,17 @@ def call_local_ai(visible_board, width, height, mines_left, client=None):
                 frontier_options.append([r, c])
 
     choices_to_send = (
-        frontier_options
-        if frontier_options
-        else all_unexplored
+        all_unexplored
+        if use_full_board
+        else (frontier_options if frontier_options else all_unexplored)
     )
 
     options_string = ", ".join(
         f"[{r},{c}]"
         for r, c in choices_to_send
     )
+
+    choices_label = "LEGAL MOVES (entire unexplored board)" if use_full_board else "LEGAL FRONTIER"
 
     user_prompt = f"""
 You are an AI agent resolving a logical deadlock in Minesweeper.
@@ -66,13 +68,13 @@ BOARD:
 
 {matrix_string}
 
-LEGAL FRONTIER:
+{choices_label}:
 
 {options_string}
 
 Instructions:
 
-1. Analyze EVERY frontier coordinate.
+1. Analyze EVERY coordinate listed above.
 2. Estimate the relative probability that each coordinate contains a mine.
 3. Lower risk = safer move.
 4. Do NOT omit any coordinate.
@@ -99,7 +101,7 @@ Example:
 
     try:
         response = client.chat.completions.create(
-            model="llama3",
+            model=model,
             messages=[
                 {
                     "role": "user",

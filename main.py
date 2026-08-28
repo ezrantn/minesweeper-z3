@@ -15,6 +15,47 @@ DECISIONS_HEADER = [
     "top1_hit", "top3_hit", "top5_hit"
 ]
 
+# Ablation DSG on/off: OLLAMA_ONLY = tanpa Z3 gatekeeper, NEURO_SYMBOLIC = dengan Z3 gatekeeper.
+LLM_MODES = ["OLLAMA_ONLY", "NEURO_SYMBOLIC"]
+NON_LLM_MODES = ["Z3_ONLY", "RANDOM_FRONTIER", "Z3_FRONTIER_RANDOM"]
+
+# Tambahkan model lain di sini kalau Ollama sudah punya modelnya terpasang lokal.
+# Contoh saat siap eksperimen skala penuh: ["llama3", "qwen2.5", "gemma3", "mistral"]
+MODELS = ["llama3"]
+
+# False = kirim cuma frontier cells ke LLM, True = kirim seluruh unexplored board.
+FULL_BOARD_OPTIONS = [False, True]
+
+def build_runs():
+    """
+    Bangun daftar konfigurasi run: setiap dict merepresentasikan satu kombinasi
+    (mode, model, prompt_scope) yang akan dijalankan `iterations` kali per board.
+    Mode non-LLM cuma dijalankan sekali karena model/full_board tidak relevan.
+    """
+    runs = []
+
+    for mode in NON_LLM_MODES:
+        runs.append({
+            "base_mode": mode,
+            "model": None,
+            "full_board": False,
+            "label": mode
+        })
+
+    for mode in LLM_MODES:
+        for model in MODELS:
+            for full_board in FULL_BOARD_OPTIONS:
+                scope = "FULLBOARD" if full_board else "FRONTIER"
+                runs.append({
+                    "base_mode": mode,
+                    "model": model,
+                    "full_board": full_board,
+                    "label": f"{mode}__{model}__{scope}"
+                })
+
+    return runs
+
+
 def main():
     boards = {
         "Beginner": {"w": 9, "h": 9, "m": 10},
@@ -24,10 +65,12 @@ def main():
 
     modes = ["OLLAMA_ONLY", "Z3_ONLY", "NEURO_SYMBOLIC", "RANDOM_FRONTIER", "Z3_FRONTIER_RANDOM"]
     iterations = 100 # Set ke 1000 atau 5000 saat pengumpulan data final paper lo
+    runs = build_runs()
 
     print("==========================================================")
     print("      NEURO-SYMBOLIC MINESWEEPER BATCH SIMULATOR          ")
     print("==========================================================\n")
+    print(f"Total konfigurasi run per board: {len(runs)}\n")
 
     with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(RESULTS_HEADER)
@@ -37,7 +80,13 @@ def main():
     for board_name, spec in boards.items():
         print(f"--- MENGUJI UKURAN PAPAN: {board_name} ({spec['w']}x{spec['h']} | {spec['m']} Mines) ---")
 
-        for mode in modes:
+        for run in runs:
+            mode = run["base_mode"]
+            model = run["model"]
+            full_board = run["full_board"]
+            label = run["label"]
+            scope = "FULLBOARD" if full_board else "FRONTIER"
+
             wins = 0
             total_time = 0
             total_llm_calls = 0
@@ -64,7 +113,11 @@ def main():
                 # game_id sama antar mode pada board yang sama => papan identik,
                 # perbandingan antar mode jadi paired (bukan sampel acak independen).
                 game_id = i
-                res = simulate_game(mode, spec['w'], spec['h'], spec['m'], game_id=game_id, board_name=board_name)
+                res = simulate_game(
+                    mode, spec['w'], spec['h'], spec['m'],
+                    game_id=game_id, board_name=board_name,
+                    model=model or "llama3", full_board=full_board
+                )
 
                 if res["result"] == "WIN":
                     wins += 1
@@ -74,16 +127,17 @@ def main():
                 fail_reasons[res["failure_reason"]] += 1
 
                 results_rows.append([
-                    board_name, mode, i + 1, game_id, res["result"], res["failure_reason"],
-                    res["duration"], res["z3_calls"], res["llm_calls"],
+                    board_name, label, mode, model, scope, i + 1, game_id,
+                    res["result"], res["failure_reason"], res["duration"],
+                    res["z3_calls"], res["llm_calls"],
                     res["frontier_calls"], res["avg_frontier_size"]
                 ])
 
                 for d in res.get("llm_decisions", []):
                     decision_dicts.append(d)
                     decision_rows.append([
-                        d["game_id"], d["board_name"], d["mode"], d["step"], d["frontier_size"],
-                        d["llm_choice"], d["safe"], d["deadlock_type"], d["reasoning"],
+                        d["game_id"], d["board_name"], label, mode, model, scope, d["step"],
+                        d["frontier_size"], d["llm_choice"], d["safe"], d["deadlock_type"], d["reasoning"],
                         d["top1_hit"], d["top3_hit"], d["top5_hit"]
                     ])
 
@@ -91,8 +145,8 @@ def main():
             avg_time = total_time / iterations
             avg_llm = total_llm_calls / iterations
 
-            print(f"[{mode}] Win Rate: {win_rate:.1f}% | Avg Time: {avg_time:.2f}s | Avg LLM Calls: {avg_llm:.1f}")
-            if mode in ("NEURO_SYMBOLIC", "OLLAMA_ONLY"):
+            print(f"[{label}] Win Rate: {win_rate:.1f}% | Avg Time: {avg_time:.2f}s | Avg LLM Calls: {avg_llm:.1f}")
+            if mode in LLM_MODES:
                 print(
                     "   -> [Failure Distribution] "
                     f"Invalid_JSON: {fail_reasons['Invalid_JSON']} | "
